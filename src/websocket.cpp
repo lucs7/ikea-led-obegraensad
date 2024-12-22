@@ -1,36 +1,50 @@
-#include "websocket.h"
+#include "PluginManager.h"
 
 #ifdef ENABLE_SERVER
 
 AsyncWebSocket ws("/ws");
 
-void sendStateAndInfo()
+void sendInfo()
 {
   DynamicJsonDocument jsonDocument(6144);
-  if (currentMode == NONE)
+  if (currentStatus == NONE)
   {
     for (int j = 0; j < ROWS * COLS; j++)
     {
       jsonDocument["data"][j] = Screen.getRenderBuffer()[j];
     }
   }
-  jsonDocument["mode"] = currentMode;
+  jsonDocument["status"] = currentStatus;
+  jsonDocument["plugin"] = pluginManager.getActivePlugin()->getId();
   jsonDocument["event"] = "info";
   jsonDocument["rotation"] = Screen.currentRotation;
   jsonDocument["brightness"] = Screen.getCurrentBrightness();
+
+  JsonArray plugins = jsonDocument.createNestedArray("plugins");
+
+  std::vector<Plugin *> &allPlugins = pluginManager.getAllPlugins();
+  for (Plugin *plugin : allPlugins)
+  {
+    JsonObject object = plugins.createNestedObject();
+
+    object["id"] = plugin->getId();
+    object["name"] = plugin->getName();
+  }
 
   String output;
   serializeJson(jsonDocument, output);
   ws.textAll(output);
 }
 
-void sendModeToAllClients(MODE mode)
+void sendMinimalInfo()
 {
   DynamicJsonDocument jsonDocument(6144);
 
-  jsonDocument["event"] = "mode";
-  jsonDocument["mode"] = mode;
+  jsonDocument["status"] = currentStatus;
+  jsonDocument["plugin"] = pluginManager.getActivePlugin()->getId();
+  jsonDocument["event"] = "info";
   jsonDocument["rotation"] = Screen.currentRotation;
+  jsonDocument["brightness"] = Screen.getCurrentBrightness();
 
   String output;
   serializeJson(jsonDocument, output);
@@ -47,113 +61,62 @@ void onWsEvent(
 {
   if (type == WS_EVT_CONNECT)
   {
-    sendStateAndInfo();
+    sendInfo();
   }
 
   if (type == WS_EVT_DATA)
   {
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
-    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+    if (info->final && info->index == 0 && info->len == len)
     {
-      data[len] = 0;
-
-      DynamicJsonDocument wsRequest(6144);
-      DeserializationError error = deserializeJson(wsRequest, data);
-
-      if (error)
+      if (info->opcode == WS_BINARY && currentStatus == WSBINARY && info->len == 256)
       {
-        Serial.print(F("deserializeJson() failed: "));
-        Serial.println(error.f_str());
-        return;
+        Screen.setRenderBuffer(data, true);
       }
-      else
+      else if (info->opcode == WS_TEXT)
       {
-        const char *event = wsRequest["event"];
-        if (!strcmp(event, "upload"))
-        {
-          if (currentMode != LOADING)
-          {
-            currentMode = LOADING;
-            int size = (int)wsRequest["screens"];
+        data[len] = 0;
 
-            customAnimationFrames.resize(size);
-            for (int i = 0; i < size; i++)
-            {
-              for (int k = 0; k < 32; k++)
-              {
-                if (k == 0)
-                {
-                  customAnimationFrames[i].resize(32);
-                }
-                customAnimationFrames[i][k] = (int)wsRequest["data"][i][k];
-              }
-            }
-            setMode(CUSTOM, true);
-          }
-        }
-        else if (!strcmp(event, "mode"))
-        {
-          MODE mode = getModeByString(wsRequest["mode"]);
-          setModeByString(wsRequest["mode"], &sendModeToAllClients);
+        DynamicJsonDocument wsRequest(6144);
+        DeserializationError error = deserializeJson(wsRequest, data);
 
-          if (mode == NONE)
-          {
-            sendStateAndInfo();
-          }
-        }
-        else if (!strcmp(event, "persist-mode"))
+        if (error)
         {
-          persistMode();
+          Serial.print(F("deserializeJson() failed: "));
+          Serial.println(error.f_str());
+          return;
         }
-        else if (!strcmp(event, "rotate"))
+        else
         {
-          bool isRight = (bool)!strcmp(wsRequest["direction"], "right");
+          pluginManager.getActivePlugin()->websocketHook(wsRequest);
 
-          Screen.currentRotation = isRight ? (Screen.currentRotation > 3 ? 1 : Screen.currentRotation + 1) : (Screen.currentRotation <= 0 ? 3 : Screen.currentRotation - 1);
+          const char *event = wsRequest["event"];
 
-          Screen.render();
-        }
-        else if (!strcmp(event, "info"))
-        {
-          sendStateAndInfo();
-        }
-        else if (!strcmp(event, "brightness"))
-        {
-          Screen.setBrightness(wsRequest["brightness"].as<unsigned int>());
-        }
+          if (!strcmp(event, "plugin"))
+          {
+            int pluginId = wsRequest["plugin"];
 
-        if (currentMode == NONE)
-        {
-          if (!strcmp(event, "clear"))
-          {
-            Screen.clear();
+            pluginManager.setActivePluginById(pluginId);
+
+            sendMinimalInfo();
           }
-          else if (!strcmp(event, "led"))
+          else if (!strcmp(event, "persist-plugin"))
           {
-            Screen.setPixelAtIndex(wsRequest["index"], wsRequest["status"]);
-            Screen.render();
+            pluginManager.persistActivePlugin();
           }
-          else if (!strcmp(event, "screen"))
+          else if (!strcmp(event, "rotate"))
           {
-            uint8_t buffer[ROWS * COLS];
-            for (int i = 0; i < ROWS * COLS; i++)
-            {
-              buffer[i] = wsRequest["data"][i];
-            }
-            Screen.setRenderBuffer(buffer);
-            delay(10);
-            Screen.render();
+            bool isRight = (bool)!strcmp(wsRequest["direction"], "right");
+
+            Screen.currentRotation = isRight ? (Screen.currentRotation > 3 ? 1 : Screen.currentRotation + 1) : (Screen.currentRotation <= 0 ? 3 : Screen.currentRotation - 1);
           }
-          else if (!strcmp(event, "persist"))
+          else if (!strcmp(event, "info"))
           {
-            Screen.persist();
+            sendInfo();
           }
-          else if (!strcmp(event, "load"))
+          else if (!strcmp(event, "brightness"))
           {
-            Screen.loadFromStorage();
-            delay(10);
-            Screen.render();
-            sendStateAndInfo();
+            Screen.setBrightness(wsRequest["brightness"].as<uint8_t>());
           }
         }
       }

@@ -8,7 +8,6 @@ Turn your OBEGRÄNSAD LED Wall Lamp into a live drawing canvas
 
 ![ezgif-3-2019fca7a4](https://user-images.githubusercontent.com/15351728/200184222-a590575d-983d-4ab8-a322-c6bcf433d364.gif)
 
-
 ## Features
 
 - Persist your drawing
@@ -18,8 +17,9 @@ Turn your OBEGRÄNSAD LED Wall Lamp into a live drawing canvas
 - Wifi Control
 - Web-GUI
 - Load an image
-- Switch mode by pressing the button
-- Modes
+- Switch plugin by pressing the button
+- Plugins
+  - Draw
   - Game of life
   - Breakout
   - Snake
@@ -27,8 +27,13 @@ Turn your OBEGRÄNSAD LED Wall Lamp into a live drawing canvas
   - Lines
   - Circle
   - Clock
+  - Big Clock
   - Weather
-- Custom Animation with the "Creator"
+  - Rain
+  - Animation with the "Creator"
+  - Firework
+  - DDP
+  - Pong Clock
 
 # Control the board
 
@@ -46,6 +51,7 @@ The ESP32 I used:
 <img src="https://user-images.githubusercontent.com/15351728/200148521-86d0f9e6-2c41-4707-b2d9-8aa24a0e440e.jpg" width="60%" />
 
 Verified to work with TTGO LoRa32 V2.1 (T3_V1.6.1).
+Note: On esp8266 per pixel brightness only works when storage and global brightness (analogWrite) are disabled.
 
 ## Open the lamp
 
@@ -65,10 +71,10 @@ Above is a microcontroller. You have to remove it, because it contains the stand
 - Open folder with VSCode
 - Install platformIO (https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)
 - Set all variables
-  - Wifi
+  - Wifi (on ESP8266)
   - Upload
   - Your Pins
-  - Latitude, Longitude, and OpenWeatherMap API key
+  - Latitude, Longitude, City etc. (https://github.com/chubin/wttr.in)
 
 Variables can be found inside `include/constants.h`.
 
@@ -77,56 +83,253 @@ Variables can be found inside `include/constants.h`.
 ```cpp
 #pragma once
 
+#define WIFI_HOSTNAME ""
+
+#ifdef ESP8266
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
-#define WIFI_HOSTNAME ""
+#endif
 
 #define OTA_USERNAME ""
 #define OTA_PASSWORD ""
-
-#define LATITUDE ""
-#define LONGITUDE ""
-#define WEATHERKEY "" // https://home.openweathermap.org/api_keys
 ```
 
 also set username and password inside `upload.py`, if you want to use OTA Updates.
+
+### Configuring WiFi with WiFi manager
+
+_Note:_ The WiFi manager only works on ESP32. For ESP8266, `WIFI_SSID` and `WIFI_PASSWORD` need to be provided in `secrets.h`.
+
+This project uses [tzapu's WiFiManager](https://github.com/tzapu/WiFiManager). After booting up, the device will try
+to connect to known access points. If no known access point is available, the device will create a network called
+`Ikea Display Setup WiFi`. Connect to this network on any device. A captive portal will pop up and will take you
+through the configuration process. After a successful connection, the device will reboot and is ready to go.
+
+The name of the created network can be changed by modifying `WIFI_MANAGER_SSID` in `include/constants.h`.
 
 ### PINS
 
 Connect them like this and remember to set them in `include/constants.h` according to your board.
 
-| LCD              | ESP32  | TTGO LoRa32 |
-| :----------------|:------:|:-----------:|
-| GND              | GND    | GND         |
-| VCC              | 5V     | 5V          |
-| EN               | GPIO26 | IO22        |
-| IN               | GPIO27 | IO23        |
-| CLK              | GPIO14 | IO02        |
-| CLA              | GPIO12 | IO15        |
-| BUTTON one end   | GPIO16 | IO21        |
-| BUTTON other end | GND    | GND         |
+|       LCD        | ESP32  | TTGO LoRa32 | NodeMCUv2 | Lolin D32 (Pro) |
+| :--------------: | :----: | :---------: | :-------: | :-------------: |
+|       GND        |  GND   |     GND     |    GND    |       GND       |
+|       VCC        |   5V   |     5V      |    VIN    |       USB       |
+| EN (PIN_ENABLE)  | GPIO26 |    IO22     | GPIO16 D0 |     GPIO26      |
+|  IN (PIN_DATA)   | GPIO27 |    IO23     | GPIO13 D7 |     GPIO27      |
+| CLK (PIN_CLOCK)  | GPIO14 |    IO02     | GPIO14 D5 |     GPIO14      |
+| CLA (PIN_LATCH)  | GPIO12 |    IO15     | GPIO0 D3  |     GPIO12      |
+|  BUTTON one end  | GPIO16 |    IO21     | GPIO2 D4  |     GPIO25      |
+| BUTTON other end |  GND   |     GND     |    GND    |       GND       |
 
 <img src="https://user-images.githubusercontent.com/86414213/205999001-6213fc4f-be2f-4305-a17a-44fdc9349069.jpg" width="60%" />
+
+### Alternate Button Wiring
+
+Thanks to [RBEGamer](https://github.com/RBEGamer) who is showing in this [issue](https://github.com/ph1p/ikea-led-obegraensad/issues/79) how to use the original button wiring. With this solution you won't need the "BUTTON one end" and "BUTTON other end" soldering from the table above.
 
 # Development
 
 - `src` contains the arduino code.
+
   - Run it with platform io
-  - You can uncomment the OTA lines in `platform.ini` if you want. Replace the IP with your device IP.
+  - You can uncomment the OTA lines in `platformio.ini` if you want. Replace the IP with your device IP.
 
 - `frontend` contains the web code.
+
   - First run `npm i`
   - Set your device IP inside the `.env` file
   - Start the server with `npm run dev`
   - Build it with `npm run build`. This command creates the `webgui.cpp` for you.
 
-# Ideas
+- Build frontend using `Docker`
+  - From the root of the repo, run `docker compose run node`
 
-[] gifs
-[] weather
-[] animation upload
-[] use `<canvas />`
+## Plugins
 
-## Credits
+1. Start by creating a new C++ file for your plugin. For example, let's call it plugins/MyPlugin.(cpp/h).
 
-Breakout game https://elektro.turanis.de/html/prj104/index.html
+**plugins/MyPlugin.h**
+
+```cpp
+#pragma once
+
+#include "PluginManager.h"
+
+class MyPlugin : public Plugin {
+public:
+    MyPlugin();
+    ~MyPlugin() override;
+
+    void setup() override;
+    void loop() override;
+    const char* getName() const override;
+
+    void teardown() override; // optional
+    void websocketHook(DynamicJsonDocument &request) override; // optional
+};
+```
+
+**plugins/MyPlugin.cpp**
+
+```cpp
+#include "plugins/MyPlugin.h"
+
+MyPlugin::MyPlugin() {
+    // Constructor logic, if needed
+}
+
+void MyPlugin::setup() {
+    // Setup logic for your plugin
+}
+
+void MyPlugin::loop() {
+    // Loop logic for your plugin
+}
+
+const char* MyPlugin::getName() const {
+    return "MyPlugin"; // name in GUI
+}
+
+void MyPlugin::teardown() {
+  // code if plugin gets deactivated
+}
+
+void MyPlugin::websocketHook(DynamicJsonDocument &request) {
+  // handle websocket requests
+}
+```
+
+2. Add your plugin to the `main.cpp`.
+
+```cpp
+#include "plugins/MyPlugin.h"
+
+pluginManager.addPlugin(new MyPlugin());
+```
+
+# DDP (Distributed Display Protocol)
+
+You can set the panel to DDP using the button or via the web interface.
+This Protocol uses **UDP** and listens on Port **4048**.
+
+## Helpful Links
+
+- https://kno.wled.ge/interfaces/ddp/
+- http://www.3waylabs.com/ddp/
+
+# External Call
+
+The LED Display service provides a simple yet powerful external interface that allows users to display messages and graphs on a 16x16 LED display. This functionality can be accessed through HTTP calls to the service endpoint.
+
+## Message Display
+
+To display a message on the LED display, users can make an HTTP GET request to the following endpoint:
+
+```
+http://your-server/api/message
+```
+
+### Parameters
+
+- `text` (optional): The text message to be displayed on the LED display.
+- `graph` (optional): A comma-separated list of integers representing a graph. The values should be in the range of 0 to 15 and will be visualized as a graph on the LED display.
+- `miny` (optional): scaling for lower end of the graph, defaults to 0
+- `maxy` (optional): scaling for upper end of the graph, defaults to 15
+- `repeat` (optional): The number of times the message should be repeated. If not provided, the default is 1. Set this value to -1 to repeat infinitely. While messages ar pending for display an indicator led in the upper left corner will flash.
+- `id` (optional): A unique identifier for the message. This can be used for later removal or modification of the message.
+- `delay` (optional): The number of ms of delay between every scroll move. Default is 50 ms.
+
+#### Example
+
+```
+GET http://your-server/api/message?text=Hello&graph=8,5,2,1,0,0,1,4,7,10,13,14,15,15,14,11&repeat=3&id=1&delay=60
+```
+
+This example will display the message "Hello" on the LED display with a corresponding graph, repeat it three times, and assign it the identifier 1, waits 60ms while scrolling.
+
+## Message Removal
+
+To remove a message from the display, users can make an HTTP GET request to the following endpoint:
+
+```
+http://your-server/api/removemessage
+```
+
+### Parameters
+
+- `id` (required): The unique identifier of the message to be removed.
+
+#### Example
+
+```
+GET http://your-server/api/removemessage?id=1
+```
+
+This example will remove the message with the identifier 1 from the LED display.
+
+## Get Status
+
+To retrieve the current status of the server.
+
+```
+GET http://your-server/api/status
+```
+
+## Get Metadata
+
+To get the (fixed) metadata, like number of rows and columns and a list of available plugins.
+
+```
+GET http://your-server/api/metadata
+```
+
+## Set Active Plugin by ID
+
+To set an active plugin by ID, make an HTTP PATCH request to the following endpoint:
+
+```
+PATCH http://your-server/api/plugin
+```
+
+### Parameters
+
+- `id` (required): The ID of the plugin to set as active.
+
+### Response
+
+- Success: `200 OK` with the message "Plugin Set".
+- Not Found: `404 Not Found` with the message "Plugin not found".
+
+## Set Brightness
+
+To set the brightness of the LED display, make an HTTP GET request to the following endpoint:
+
+```
+PATCH http://your-server/api/brightness
+```
+
+### Parameters
+
+- `value` (required): The brightness value (0..255).
+
+### Response
+
+- Success: `200 OK` with the message "Ok".
+- Invalid Value: `404 Not Found` with the message "Invalid Brightness Value".
+
+## Get current display data
+
+To get the current displayed data as an byte-array, each byte representing the brightness value.
+Be aware that the global brightness value gets applied AFTER these values, so if you set the global brightness to 16, you will still get values of 255 this way.
+
+```
+GET http://your-server/api/data
+```
+
+# Troubleshooting
+
+## Flickering panel
+
+- Check all soldering points, especially VCC
+- Check if the board gets enough power
